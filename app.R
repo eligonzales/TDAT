@@ -963,7 +963,7 @@ server <- function(input, output,session) {
       
       ggplot(aes(YEAR , RESULT)) +
       geom_boxplot( fill = "aquamarine4") + 
-      labs(title = glue("{input$carbonyl2} {unique(month(as.double(data_stats()$MONTH),label = TRUE, abbr = FALSE))} Yearly Comparison"))
+      labs(title = glue("{input$pollutant} {unique(month(as.double(data_stats()$MONTH),label = TRUE, abbr = FALSE))} Yearly Comparison"))
   })
   
 }
