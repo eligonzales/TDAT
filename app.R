@@ -1,8 +1,6 @@
 library(shiny)
 library(tidyverse)
 library(plotly)
-library(xts)
-library(dygraphs)
 library(ggpmisc)
 library(DT)
 library(glue)
@@ -334,18 +332,17 @@ main_scatter <-  mainPanel(
   dataTableOutput("scatter_table"))
 
 main_time_series <- mainPanel(
-  tabsetPanel(
-    tabPanel("Line",
-             dygraphOutput("time_series",height = "800px")),
-    tabPanel('Bar Charts',
-             dygraphOutput("bar_chart",height = "800px")),
-    tabPanel("Stacked Bar",
-             dygraphOutput("stacked_bar",height = "800px"))))
-
-
+  plotOutput("time_series",width = "100%", height = "600px",
+             dblclick = "plot1_dblclick",
+             brush = brushOpts(id = "time_series_brush",
+                               resetOnNew = TRUE
+             )))
 main_compare <- mainPanel( 
-  dygraphOutput("compare", height = "800px")
-)
+  plotOutput("compare",width = "100%", height = "600px",
+             dblclick = "plot2_dblclick",
+             brush = brushOpts(id = "compare_brush",
+                               resetOnNew = TRUE
+             )))
 
 main_bar <- fluidPage(actionButton("backward", "Backward"),
                       actionButton("forward", "Forward"),
@@ -506,10 +503,15 @@ server <- function(input, output,session) {
   
   observeEvent(data(),{ 
     choices <- unique(data()$ANALYTE)
+    choices2 <- data() %>% 
+      filter(category == "secondary", 
+             RESULT > 0) %>% 
+      distinct(ANALYTE) %>%
+      pull()
     updateSelectInput("x_axis", "X Axis", choices = sort(choices), session = session)
     updateSelectInput("y_axis", "Y Axis", choices = sort(choices), session = session)
     updateCheckboxGroupInput("carbonyl", "Pollutant", choices = sort(choices), session = session)
-    updateSelectInput("carbonyl2", "Pollutant", choices = sort(choices), session = session)
+    updateSelectInput("carbonyl2", "Pollutant", choices = sort(choices2), session = session)
     updateSelectInput("pollutant", "Pollutant", choices = sort(choices), session = session)
   })
   
@@ -605,20 +607,12 @@ server <- function(input, output,session) {
   
   data_cross_tab <- reactive({
     data() %>%
+      arrange(str_to_lower(ANALYTE)) %>% 
       filter(category == "primary") %>%
       distinct(SAMPDATE,ANALYTE,RESULT) %>%
       # mutate(SAMPDATE = ymd_hm(SAMPDATE)) %>%
       pivot_wider(names_from = "ANALYTE", 
-                  values_from = "RESULT" )})
-  
-  
-  #creating data frame where column names are the site ID to compare primary vs secondary
-  
-  data_compare <- reactive({
-    data() %>%
-      select(SAMPDATE, ANALYTE, category, RESULT) %>%
-      distinct(SAMPDATE, ANALYTE,category,RESULT) %>%
-      pivot_wider(names_from = category, values_from = RESULT)
+                  values_from = "RESULT" ) 
   })
   
   #grabs the unique dates from the queried data frame
@@ -635,10 +629,6 @@ server <- function(input, output,session) {
   date <- reactive({
     unique(data()$SAMPDATE)
   })
-  
-  
-  
-  
   
   # Reactive Values ---------------------------------------------------------
   #value() will be utilized in the fingerprint plot section
@@ -677,6 +667,8 @@ server <- function(input, output,session) {
     value(new_value)
   })
   
+  ranges <- reactiveValues(x = NULL, y = NULL)
+  ranges2 <- reactiveValues(x = NULL, y = NULL)
   
   # Update Stats Report button ----------------------------------------------
   
@@ -851,58 +843,72 @@ server <- function(input, output,session) {
   
   # Time Series
   
-  output$time_series <- renderDygraph({
-    dy <-data_cross_tab() %>%
-      select(SAMPDATE, input$carbonyl)
+  output$time_series <- renderPlot({
+    data() %>% 
+      filter(ANALYTE %in% input$carbonyl,
+             category == "primary",
+             !is.na(RESULT)) %>% 
+      
+      ggplot(aes(SAMPDATE,RESULT, color = fct_reorder2(ANALYTE,SAMPDATE,RESULT))) + 
+      geom_line(linewidth = 1.1) + 
+      geom_point(size = 1.5) + 
+      coord_cartesian(xlim = ranges$x, ylim = ranges$y, expand = FALSE) + 
+      labs(x = NULL, color = "Pollutant") + 
+      theme(axis.text.x = element_text(size = 15), 
+            axis.text.y = element_text(size = 15),
+            legend.text = element_text(size = 15))
+  })
+  
+  # When a double-click happens, check if there's a brush on the plot.
+  # If so, zoom to the brush bounds; if not, reset the zoom.
+  observeEvent(input$plot1_dblclick, {
+    brush <- input$time_series_brush
+    if (!is.null(brush)) {
+      ranges$x <- c(as_datetime(brush$xmin), as_datetime(brush$xmax))
+      ranges$y <- c(brush$ymin, brush$ymax)
+      
+    } else {
+      ranges$x <- NULL
+      ranges$y <- NULL
+    }
+  })
+  
+  
+  #Time Series Bar Plot using the data() df to compare primary and secondary
+  
+  output$compare <- renderPlot({
     
-    dy <-   xts(dy[-1], order.by = dy$SAMPDATE) 
-    
-    dygraph(dy) %>%
-      dyOptions(drawPoints = TRUE, pointSize = 5, strokeWidth = 3) %>%
-      dyRangeSelector() 
+    data() %>% 
+      select(ANALYTE,SAMPDATE,RESULT,category) %>% 
+      filter(ANALYTE == input$carbonyl2) %>% 
+      pivot_wider(names_from = category, values_from = RESULT) %>% 
+      
+      ggplot(aes(SAMPDATE,primary)) + 
+      geom_col(aes(SAMPDATE,y = secondary),fill = "aquamarine3", color= "aquamarine4",alpha = 0.65,show.legend = TRUE) + 
+      geom_line(linewidth = 1.2, show.legend = TRUE, color= "aquamarine4")+
+      geom_point(size = 1.3,show.legend = TRUE, color= "aquamarine4") + 
+      coord_cartesian(xlim = ranges2$x, ylim = ranges2$y, expand = FALSE) + 
+      labs(x = NULL, y = NULL)  + 
+      theme(axis.text.x = element_text(size = 15), 
+            axis.text.y = element_text(size = 15),
+            legend.text = element_text(size = 15))
     
   })
   
-  output$bar_chart <- renderDygraph({ 
-    
-    dy2 <- data_cross_tab() %>%
-      select(SAMPDATE, input$carbonyl)
-    
-    dy2 <-   xts(dy2[-1], order.by = dy2$SAMPDATE)
-    
-    dygraph(dy2) %>%
-      dyBarChart() %>%
-      dyRangeSelector() 
-    
+  # When a double-click happens, check if there's a brush on the plot.
+  # If so, zoom to the brush bounds; if not, reset the zoom.
+  observeEvent(input$plot2_dblclick, {
+    brush <- input$compare_brush
+    if (!is.null(brush)) {
+      ranges2$x <- c(as_datetime(brush$xmin), as_datetime(brush$xmax))
+      ranges2$y <- c(brush$ymin, brush$ymax)
+      
+    } else {
+      ranges2$x <- NULL
+      ranges2$y <- NULL
+    }
   })
   
-  output$stacked_bar <- renderDygraph({
-    dy3 <- data_cross_tab() %>%
-      select(SAMPDATE, input$carbonyl)
-    
-    dy3 <-   xts(dy3[-1], order.by = dy3$SAMPDATE)
-    
-    dygraph(dy3) %>%
-      dyStackedBarChart() %>%
-      dyRangeSelector() 
-  })
-  
-  #Time Series using the data_compare() df to compare primary and secondary
-  
-  output$compare <- renderDygraph({
-    
-    dy4 <- data_compare() %>%
-      filter(ANALYTE == input$carbonyl2) %>%
-      select(SAMPDATE, 'primary','secondary') 
-    
-    dy4 <-   xts(dy4[-1], order.by = dy4$SAMPDATE)
-    
-    dygraph(dy4) %>%
-      dyOptions(drawPoints = TRUE, pointSize = 3) %>%
-      dyBarSeries('secondary') %>%
-      dyRangeSelector()
-    
-  })
   # Fingerprint plots
   # reactive value() is passed into the data()[value()] reactive expression
   # When value() = 1, data is filtered where SAMPDATE == the first unique date in queried data frame
